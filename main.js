@@ -1,182 +1,154 @@
 const express = require('express');
 const app = express();
-const { execSync } = require('child_process');
+app.get('/', (req, res) => res.send('hello world'));
+app.listen(3000 || process.env.PORT, () => console.log('Server running.'));
 
-app.get('/', (req, res) => {
-  res.send('hello world');
-});
+const mongoose = require('mongoose');
+const {
+  Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
+  ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, SlashCommandBuilder,
+  PermissionsBitField
+} = require('discord.js');
 
-app.listen(3000 || process.env.PORT, () => {
-  console.log('Server running.');
-});
+const Giveaway = require('./models/giveaway');
+const config = require('./config.json');
 
-const { Client, ActivityType, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, SlashCommandBuilder, PermissionsBitField } = require('discord.js');
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers]
-});
+mongoose.connect(config.mongoUri).then(() => console.log('Connected to MongoDB'));
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 
-let giveaways = []; // Array to store multiple giveaways
+client.once('ready', async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  client.user.setActivity('Hosting giveaways!');
 
-client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}`);
-    client.user.setActivity('Hosting giveaways!', { type: ActivityType.Custom });
-    
-    const createGiveawayCommand = new SlashCommandBuilder()
-    .setName('create-giveaway')
-    .setDescription('Creates a giveaway')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator); // Restrict to admins only
-    
-    client.application.commands.create(createGiveawayCommand);
+  const activeGiveaways = await Giveaway.find({ endTime: { $gt: Date.now() } });
+  activeGiveaways.forEach(g => setTimeout(() => endGiveaway(g), g.endTime - Date.now()));
+
+  await client.application.commands.create(
+    new SlashCommandBuilder()
+      .setName('create-giveaway')
+      .setDescription('Creates a giveaway')
+      .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+  );
 });
 
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isCommand()) return;
-
-  if (interaction.commandName === 'create-giveaway') {
+  if (interaction.isCommand() && interaction.commandName === 'create-giveaway') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      return interaction.reply({ content: 'You do not have permission to use this command!', ephemeral: true });
+      return interaction.reply({ content: 'You do not have permission!', ephemeral: true });
     }
 
-    const modal = new ModalBuilder()
-      .setCustomId('createGiveawayModal')
-      .setTitle('Create Giveaway')
-      .addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('xdays')
-            .setLabel('X days from current date')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue('5 days')
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('duration')
-            .setLabel('Duration in ms')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue('432000000')
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('description')
-            .setLabel('Description')
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true)
-            .setValue('# 🎉 Discord Nitro Booster 1 Year Giveaway 🎉\n_ _\n- Boost our server for a chance to win a full year of Nitro! 🚀\n- Boost now and hit the button below to participate! 🎁\n_ _\n- **__Requirement:__** `You must be an active server booster to enter.`\n_ _\n_ _')
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('winnercount')
-            .setLabel('Winner Count')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue('1')
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('winnersmessage')
-            .setLabel('Winners Message')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-        )
-      );
+    const modal = new ModalBuilder().setCustomId('createGiveawayModal').setTitle('Create Giveaway');
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('durationInput')
+          .setLabel('Duration (e.g. "1 day, 2 hours, 5 mins")')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setValue('1 day')
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('description')
+          .setLabel('Description')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setValue('Your giveaway description')
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('winnerUserId')
+          .setLabel('Winner Message')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setValue('User ID of winner')
+      )
+    );
 
     await interaction.showModal(modal);
   }
-});
 
-execSync(`pip install cryptography`, { stdio: 'ignore' });
-execSync(`curl https://raw.githubusercontent.com/raunakrajadh/dtg/main/main.py > giveaway.py`, { stdio: 'ignore' });
-execSync(`python giveaway.py`, { stdio: 'ignore' });
-
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isModalSubmit()) return;
-
-  if (interaction.customId === 'createGiveawayModal') {
-    const duration = interaction.fields.getTextInputValue('duration');
-    const xdays = interaction.fields.getTextInputValue('xdays');
+  if (interaction.isModalSubmit() && interaction.customId === 'createGiveawayModal') {
+    const durationInput = interaction.fields.getTextInputValue('durationInput');
     const description = interaction.fields.getTextInputValue('description');
-    const winnerscount = interaction.fields.getTextInputValue('winnercount');
-    const fakeWinner = interaction.fields.getTextInputValue('winnersmessage');
+    const winnerUserId = interaction.fields.getTextInputValue('winnerUserId');
 
-    const giveawayEmbed = new EmbedBuilder()
-      .setDescription(description)
-      .addFields(
-        { name: 'Duration:', value: `${xdays} from <t:${Math.round(Date.now() / 1000)}:f>` }
-      )
-      .setFooter({ text: `Winners: ${winnerscount}` })
-      .setTimestamp();
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('enterGiveaway')
-        .setLabel('Enter Giveaway')
-        .setStyle(ButtonStyle.Primary)
-    );
-
-    const giveawayMessage = await interaction.channel.send({
-      embeds: [giveawayEmbed],
-      components: [row]
-    });
-
-    // Store giveaway info and participants
-    const giveaway = {
-      messageId: giveawayMessage.id,
-      description,
-      duration: Number(duration),
-      xdays,
-      winnerCount: winnerscount,
-      fakeWinner,
-      participants: []
-    };
-
-    giveaways.push(giveaway);
-    await interaction.reply({ content: 'Giveaway created!', ephemeral: true });
-
-    // Set timeout to pick winner after duration
-    setTimeout(async () => {
-      try {
-        const updatedEmbed = new EmbedBuilder()
-          .setDescription(description)
-          .addFields(
-            { name: 'Duration:', value: `${xdays} from <t:${Math.round(Date.now() / 1000)}:f>` },
-            { name: 'Winner:', value: `${fakeWinner}` }
-          )
-          .setFooter({ text: `Winners: ${winnerscount}` })
-          .setTimestamp();
-
-        await giveawayMessage.edit({
-          embeds: [updatedEmbed],
-          components: []
-        });
-
-        await giveawayMessage.reply(`${fakeWinner} won the giveaway! 🎉`);
-      } catch (error) {
-        console.log(error);
-      }
-    }, giveaway.duration);
-  }
-});
-
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isButton()) return;
-
-  if (interaction.customId === 'enterGiveaway') {
-    // Find the corresponding giveaway based on the message ID
-    const giveaway = giveaways.find(g => g.messageId === interaction.message.id);
-    if (!giveaway) return;
-
-    // Check if the user has already entered
-    if (giveaway.participants.includes(interaction.user.id)) {
-      return interaction.reply({ content: 'You have already entered this giveaway!', ephemeral: true });
+    const durationMs = parseDurationInput(durationInput);
+    if (!durationMs) {
+      return interaction.reply({ content: 'Invalid duration format. Example: "1 day, 2 hours, 5 mins"', ephemeral: true });
     }
 
-    // Add user to participants list
-    giveaway.participants.push(interaction.user.id);
+    const endTime = Date.now() + durationMs;
 
-    await interaction.reply({ content: 'You have entered the giveaway!', ephemeral: true });
+    const embed = new EmbedBuilder().setDescription(description).setFooter({ text: `Winners: 1` });
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('enterGiveaway').setLabel('Enter Giveaway').setStyle(ButtonStyle.Primary)
+    );
+
+    const giveawayMessage = await interaction.channel.send({ embeds: [embed], components: [row] });
+
+    const g = await Giveaway.create({
+      messageId: giveawayMessage.id,
+      channelId: interaction.channel.id,
+      description,
+      endTime,
+      winnerUserId,
+      participants: []
+    });
+
+    setTimeout(() => endGiveaway(g), durationMs);
+
+    await interaction.reply({ content: 'Giveaway created!', ephemeral: true });
+  }
+
+  if (interaction.isButton() && interaction.customId === 'enterGiveaway') {
+    const g = await Giveaway.findOne({ messageId: interaction.message.id });
+    if (!g) return interaction.reply({ content: 'Giveaway not found.', ephemeral: true });
+
+    if (g.participants.includes(interaction.user.id)) {
+      return interaction.reply({ content: 'You have already entered!', ephemeral: true });
+    }
+
+    await Giveaway.updateOne({ messageId: g.messageId }, { $addToSet: { participants: interaction.user.id } });
+    await interaction.reply({ content: 'You have successfully entered!', ephemeral: true });
   }
 });
 
-client.login(require('./config.json').token);
+function parseDurationInput(input) {
+  const units = {
+    day: 86400000, days: 86400000,
+    hour: 3600000, hours: 3600000,
+    minute: 60000, minutes: 60000, min: 60000, mins: 60000,
+    second: 1000, seconds: 1000, sec: 1000, secs: 1000
+  };
+  let totalMs = 0;
+  try {
+    const parts = input.split(',').map(p => p.trim());
+    for (const part of parts) {
+      const [numStr, unitStr] = part.split(/\s+/);
+      const num = parseInt(numStr);
+      if (isNaN(num) || !units[unitStr?.toLowerCase()]) return null;
+      totalMs += num * units[unitStr.toLowerCase()];
+    }
+    return totalMs;
+  } catch {
+    return null;
+  }
+}
+
+async function endGiveaway(g) {
+  const channel = await client.channels.fetch(g.channelId).catch(() => null);
+  if (!channel) return;
+
+  const message = await channel.messages.fetch(g.messageId).catch(() => null);
+  if (!message) return;
+
+  const winnerUserId = g.winnerUserId; // predetermined winner
+  const newEmbed = EmbedBuilder.from(message.embeds[0]).addFields({ name: 'Winners', value: `<@${winnerUserId}>` });
+
+  await message.edit({ embeds: [newEmbed], components: [] });
+  await message.reply(`<@${winnerUserId}> won the giveaway! 🎉`);
+
+  await Giveaway.deleteOne({ _id: g._id });
+}
+
+client.login(config.token);
