@@ -7,7 +7,7 @@ const mongoose = require('mongoose');
 const {
   Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, SlashCommandBuilder,
-  PermissionsBitField
+  PermissionsBitField, ActivityType
 } = require('discord.js');
 
 const Giveaway = require('./models/giveaway');
@@ -18,7 +18,10 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-  client.user.setActivity('Hosting giveaways!');
+  client.user.setPresence({
+    activities: [{ name: 'Hosting Giveaways!', type: ActivityType.Custom}],
+    status: 'online'
+  });
 
   const activeGiveaways = await Giveaway.find({ endTime: { $gt: Date.now() } });
   activeGiveaways.forEach(g => setTimeout(() => endGiveaway(g), g.endTime - Date.now()));
@@ -41,6 +44,12 @@ client.on('interactionCreate', async interaction => {
 
     modal.addComponents(
       new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('description')
+          .setLabel('Description')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId('durationInput')
           .setLabel('Duration (e.g. "1 day, 2 hours, 5 mins")')
           .setStyle(TextInputStyle.Short)
@@ -48,18 +57,10 @@ client.on('interactionCreate', async interaction => {
           .setValue('1 day')
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('description')
-          .setLabel('Description')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true)
-          .setValue('Your giveaway description')
-      ),
-      new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId('winnerUserId')
           .setLabel('Winner Message')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
-          .setValue('User ID of winner')
       )
     );
 
@@ -78,7 +79,7 @@ client.on('interactionCreate', async interaction => {
 
     const endTime = Date.now() + durationMs;
 
-    const embed = new EmbedBuilder().setDescription(description).setFooter({ text: `Winners: 1` });
+    const embed = new EmbedBuilder().setTitle(`New Giveaway for ${interaction.guild.name}`).setDescription(description).setFooter({ text: "Entries: 0" });
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('enterGiveaway').setLabel('Enter Giveaway').setStyle(ButtonStyle.Primary)
@@ -108,7 +109,15 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: 'You have already entered!', ephemeral: true });
     }
 
-    await Giveaway.updateOne({ messageId: g.messageId }, { $addToSet: { participants: interaction.user.id } });
+    await Giveaway.updateOne(
+      { messageId: g.messageId },
+      { $addToSet: { participants: interaction.user.id } }
+    );
+    const updated = await Giveaway.findOne({ messageId: g.messageId });
+    const message = await interaction.channel.messages.fetch(g.messageId);
+    const newEmbed = EmbedBuilder.from(message.embeds[0]).setFooter({ text: `Entries: ${updated.participants.length}` });
+
+    await message.edit({ embeds: [newEmbed] });
     await interaction.reply({ content: 'You have successfully entered!', ephemeral: true });
   }
 });
@@ -143,7 +152,7 @@ async function endGiveaway(g) {
   if (!message) return;
 
   const winnerUserId = g.winnerUserId; // predetermined winner
-  const newEmbed = EmbedBuilder.from(message.embeds[0]).addFields({ name: 'Winners', value: `<@${winnerUserId}>` });
+  const newEmbed = EmbedBuilder.from(message.embeds[0]).addFields({ name: 'Winner', value: `<@${winnerUserId}>` });
 
   await message.edit({ embeds: [newEmbed], components: [] });
   await message.reply(`<@${winnerUserId}> won the giveaway! 🎉`);
